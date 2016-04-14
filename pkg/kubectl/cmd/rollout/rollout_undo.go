@@ -17,7 +17,6 @@ limitations under the License.
 package rollout
 
 import (
-	"fmt"
 	"io"
 
 	"k8s.io/kubernetes/pkg/api/meta"
@@ -61,8 +60,7 @@ func NewCmdRolloutUndo(f *cmdutil.Factory, out io.Writer) *cobra.Command {
 		Long:    undo_long,
 		Example: undo_example,
 		Run: func(cmd *cobra.Command, args []string) {
-			cmdutil.CheckErr(options.CompleteUndo(f, cmd, out, args))
-			cmdutil.CheckErr(options.RunUndo())
+			cmdutil.CheckErr(options.RunUndo(f, cmd, out, args))
 		},
 	}
 
@@ -73,7 +71,7 @@ func NewCmdRolloutUndo(f *cmdutil.Factory, out io.Writer) *cobra.Command {
 	return cmd
 }
 
-func (o *UndoOptions) CompleteUndo(f *cmdutil.Factory, cmd *cobra.Command, out io.Writer, args []string) error {
+func (o *UndoOptions) RunUndo(f *cmdutil.Factory, cmd *cobra.Command, out io.Writer, args []string) error {
 	if len(args) == 0 && len(o.Filenames) == 0 {
 		return cmdutil.UsageError(cmd, "Required resource not specified.")
 	}
@@ -87,31 +85,39 @@ func (o *UndoOptions) CompleteUndo(f *cmdutil.Factory, cmd *cobra.Command, out i
 		return err
 	}
 
-	infos, err := resource.NewBuilder(o.Mapper, o.Typer, resource.ClientMapperFunc(f.ClientForMapping), f.Decoder(true)).
+	r := resource.NewBuilder(o.Mapper, o.Typer, resource.ClientMapperFunc(f.ClientForMapping), f.Decoder(true)).
 		NamespaceParam(cmdNamespace).DefaultNamespace().
 		FilenameParam(enforceNamespace, o.Recursive, o.Filenames...).
 		ResourceTypeOrNameArgs(true, args...).
+		ContinueOnError().
 		Latest().
 		Flatten().
-		Do().
-		Infos()
+		Do()
+	err = r.Err()
 	if err != nil {
 		return err
 	}
 
-	if len(infos) != 1 {
-		return fmt.Errorf("rollout undo is only supported on individual resources - %d resources were found", len(infos))
-	}
-	o.Info = infos[0]
-	o.Rollbacker, err = f.Rollbacker(o.Info.ResourceMapping())
-	return err
-}
+	err = r.Visit(func(info *resource.Info, err error) error {
+		if err != nil {
+			return err
+		}
 
-func (o *UndoOptions) RunUndo() error {
-	result, err := o.Rollbacker.Rollback(o.Info.Namespace, o.Info.Name, nil, o.ToRevision, o.Info.Object)
+		o.Info = info
+		o.Rollbacker, err = f.Rollbacker(o.Info.ResourceMapping())
+		if err != nil {
+			return err
+		}
+
+		result, err := o.Rollbacker.Rollback(o.Info.Namespace, o.Info.Name, nil, o.ToRevision, o.Info.Object)
+		if err != nil {
+			return err
+		}
+		cmdutil.PrintSuccess(o.Mapper, false, o.Out, o.Info.Mapping.Resource, o.Info.Name, result)
+		return nil
+	})
 	if err != nil {
 		return err
 	}
-	cmdutil.PrintSuccess(o.Mapper, false, o.Out, o.Info.Mapping.Resource, o.Info.Name, result)
 	return nil
 }
