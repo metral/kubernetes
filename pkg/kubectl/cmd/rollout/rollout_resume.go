@@ -17,7 +17,6 @@ limitations under the License.
 package rollout
 
 import (
-	"fmt"
 	"io"
 
 	"github.com/spf13/cobra"
@@ -62,8 +61,7 @@ func NewCmdRolloutResume(f *cmdutil.Factory, out io.Writer) *cobra.Command {
 		Long:    resume_long,
 		Example: resume_example,
 		Run: func(cmd *cobra.Command, args []string) {
-			cmdutil.CheckErr(opts.CompleteResume(f, cmd, out, args))
-			cmdutil.CheckErr(opts.RunResume())
+			cmdutil.CheckErr(opts.RunResume(f, cmd, out, args))
 		},
 	}
 
@@ -73,7 +71,7 @@ func NewCmdRolloutResume(f *cmdutil.Factory, out io.Writer) *cobra.Command {
 	return cmd
 }
 
-func (o *ResumeConfig) CompleteResume(f *cmdutil.Factory, cmd *cobra.Command, out io.Writer, args []string) error {
+func (o *ResumeConfig) RunResume(f *cmdutil.Factory, cmd *cobra.Command, out io.Writer, args []string) error {
 	if len(args) == 0 && len(o.Filenames) == 0 {
 		return cmdutil.UsageError(cmd, cmd.Use)
 	}
@@ -87,32 +85,39 @@ func (o *ResumeConfig) CompleteResume(f *cmdutil.Factory, cmd *cobra.Command, ou
 		return err
 	}
 
-	infos, err := resource.NewBuilder(o.Mapper, o.Typer, resource.ClientMapperFunc(f.ClientForMapping), f.Decoder(true)).
+	r := resource.NewBuilder(o.Mapper, o.Typer, resource.ClientMapperFunc(f.ClientForMapping), f.Decoder(true)).
 		NamespaceParam(cmdNamespace).DefaultNamespace().
 		FilenameParam(enforceNamespace, o.Recursive, o.Filenames...).
 		ResourceTypeOrNameArgs(true, args...).
-		SingleResourceType().
+		ContinueOnError().
 		Latest().
-		Do().Infos()
+		Flatten().
+		Do()
+	err = r.Err()
 	if err != nil {
 		return err
 	}
-	if len(infos) != 1 {
-		return fmt.Errorf("rollout resume is only supported on individual resources - %d resources were found", len(infos))
-	}
-	o.Info = infos[0]
-	return nil
-}
 
-func (o ResumeConfig) RunResume() error {
-	isAlreadyResumed, err := o.ResumeObject(o.Info.Object)
+	err = r.Visit(func(info *resource.Info, err error) error {
+		if err != nil {
+			return err
+		}
+
+		o.Info = info
+
+		isAlreadyResumed, err := o.ResumeObject(o.Info.Object)
+		if err != nil {
+			return err
+		}
+		if isAlreadyResumed {
+			cmdutil.PrintSuccess(o.Mapper, false, o.Out, o.Info.Mapping.Resource, o.Info.Name, "already resumed")
+			return nil
+		}
+		cmdutil.PrintSuccess(o.Mapper, false, o.Out, o.Info.Mapping.Resource, o.Info.Name, "resumed")
+		return nil
+	})
 	if err != nil {
 		return err
 	}
-	if isAlreadyResumed {
-		cmdutil.PrintSuccess(o.Mapper, false, o.Out, o.Info.Mapping.Resource, o.Info.Name, "already resumed")
-		return nil
-	}
-	cmdutil.PrintSuccess(o.Mapper, false, o.Out, o.Info.Mapping.Resource, o.Info.Name, "resumed")
 	return nil
 }
