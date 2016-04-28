@@ -190,7 +190,7 @@ func RunEdit(f *cmdutil.Factory, out, errOut io.Writer, cmd *cobra.Command, args
 	encoder := f.JSONEncoder()
 	defaultVersion, err := cmdutil.OutputVersion(cmd, clientConfig.GroupVersion)
 	if err != nil {
-		allErrs = append(allErrs, err)
+		return err
 	}
 	objs, err := resource.AsVersionedObjects(infos, defaultVersion.String(), encoder)
 	if err != nil {
