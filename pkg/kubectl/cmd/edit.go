@@ -36,7 +36,6 @@ import (
 	"k8s.io/kubernetes/pkg/kubectl/resource"
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/util/crlf"
-	utilerrors "k8s.io/kubernetes/pkg/util/errors"
 	"k8s.io/kubernetes/pkg/util/strategicpatch"
 	"k8s.io/kubernetes/pkg/util/yaml"
 
@@ -160,11 +159,15 @@ func RunEdit(f *cmdutil.Factory, out, errOut io.Writer, cmd *cobra.Command, args
 		NamespaceParam(cmdNamespace).DefaultNamespace().
 		FilenameParam(enforceNamespace, options.Recursive, options.Filenames...).
 		ResourceTypeOrNameArgs(true, args...).
-		ContinueOnError().
 		Latest().
 		Flatten().
 		Do()
 	err = r.Err()
+	if err != nil {
+		return err
+	}
+
+	infos, err := r.Infos()
 	if err != nil {
 		return err
 	}
@@ -174,27 +177,14 @@ func RunEdit(f *cmdutil.Factory, out, errOut io.Writer, cmd *cobra.Command, args
 		return err
 	}
 
-	infos := []*resource.Info{}
-	allErrs := []error{}
-	err = r.Visit(func(info *resource.Info, err error) error {
-		if err != nil {
-			return err
-		}
-		infos = append(infos, info)
-		return nil
-	})
-	if err != nil {
-		allErrs = append(allErrs, err)
-	}
-
 	encoder := f.JSONEncoder()
 	defaultVersion, err := cmdutil.OutputVersion(cmd, clientConfig.GroupVersion)
 	if err != nil {
-		allErrs = append(allErrs, err)
+		return err
 	}
 	objs, err := resource.AsVersionedObjects(infos, defaultVersion.String(), encoder)
 	if err != nil {
-		allErrs = append(allErrs, err)
+		return err
 	}
 
 	var (
@@ -221,11 +211,11 @@ outter:
 				w = crlf.NewCRLFWriter(w)
 			}
 			if err := results.header.writeTo(w); err != nil {
-				allErrs = append(allErrs, preservedFile(err, results.file, errOut))
+				return preservedFile(err, results.file, errOut)
 			}
 			if !containsError {
 				if err := printer.PrintObj(obj, w); err != nil {
-					allErrs = append(allErrs, preservedFile(err, results.file, errOut))
+					return preservedFile(err, results.file, errOut)
 				}
 				original = buf.Bytes()
 			} else {
@@ -239,7 +229,7 @@ outter:
 			editedDiff := edited
 			edited, file, err = edit.LaunchTempFile(fmt.Sprintf("%s-edit-", path.Base(os.Args[0])), ext, buf)
 			if err != nil {
-				allErrs = append(allErrs, preservedFile(err, results.file, errOut))
+				return preservedFile(err, results.file, errOut)
 			}
 			if bytes.Equal(stripComments(editedDiff), stripComments(edited)) {
 				// Ugly hack right here. We will hit this either (1) when we try to
@@ -265,7 +255,7 @@ outter:
 			}
 			lines, err := hasLines(bytes.NewBuffer(edited))
 			if err != nil {
-				allErrs = append(allErrs, preservedFile(err, file, errOut))
+				return preservedFile(err, file, errOut)
 			}
 			if !lines {
 				os.Remove(file)
@@ -290,12 +280,12 @@ outter:
 
 			// put configuration annotation in "updates"
 			if err := kubectl.CreateOrUpdateAnnotation(cmdutil.GetFlagBool(cmd, cmdutil.ApplyAnnotationsFlag), updates, encoder); err != nil {
-				allErrs = append(allErrs, preservedFile(err, file, errOut))
+				return preservedFile(err, file, errOut)
 			}
 			if cmdutil.ShouldRecord(cmd, updates) {
 				err = cmdutil.RecordChangeCause(updates.Object, f.Command())
 				if err != nil {
-					allErrs = append(allErrs, err)
+					return err
 				}
 			}
 			editedCopy := edited
@@ -307,17 +297,17 @@ outter:
 
 			// need to make sure the original namespace wasn't changed while editing
 			if err = visitor.Visit(resource.RequireNamespace(cmdNamespace)); err != nil {
-				allErrs = append(allErrs, preservedFile(err, file, errOut))
+				return preservedFile(err, file, errOut)
 			}
 
 			// use strategic merge to create a patch
 			originalJS, err := yaml.ToJSON(original)
 			if err != nil {
-				allErrs = append(allErrs, preservedFile(err, file, errOut))
+				return preservedFile(err, file, errOut)
 			}
 			editedJS, err := yaml.ToJSON(editedCopy)
 			if err != nil {
-				allErrs = append(allErrs, preservedFile(err, file, errOut))
+				return preservedFile(err, file, errOut)
 			}
 			patch, err := strategicpatch.CreateStrategicMergePatch(originalJS, editedJS, obj)
 			// TODO: change all jsonmerge to strategicpatch
@@ -325,7 +315,7 @@ outter:
 			preconditions := []jsonmerge.PreconditionFunc{}
 			if err != nil {
 				glog.V(4).Infof("Unable to calculate diff, no merge is possible: %v", err)
-				allErrs = append(allErrs, preservedFile(err, file, errOut))
+				return preservedFile(err, file, errOut)
 			} else {
 				preconditions = append(preconditions, jsonmerge.RequireKeyUnchanged("apiVersion"))
 				preconditions = append(preconditions, jsonmerge.RequireKeyUnchanged("kind"))
@@ -335,7 +325,7 @@ outter:
 
 			if hold, msg := jsonmerge.TestPreconditionsHold(patch, preconditions); !hold {
 				fmt.Fprintf(errOut, "error: %s\n", msg)
-				allErrs = append(allErrs, preservedFile(nil, file, errOut))
+				return preservedFile(nil, file, errOut)
 			}
 
 			errorMsg := ""
@@ -343,7 +333,7 @@ outter:
 				patched, err := resource.NewHelper(info.Client, info.Mapping).Patch(info.Namespace, info.Name, api.StrategicMergePatchType, patch)
 				if err != nil {
 					errorMsg = results.addError(err, info)
-					allErrs = append(allErrs, err)
+					return err
 				}
 				info.Refresh(patched, true)
 				cmdutil.PrintSuccess(mapper, false, out, info.Mapping.Resource, info.Name, "edited")
@@ -372,7 +362,7 @@ outter:
 			containsError = true
 		}
 	}
-	return utilerrors.NewAggregate(allErrs)
+	return nil
 }
 
 // editReason preserves a message about the reason this file must be edited again
