@@ -121,6 +121,19 @@ func RunScale(f *cmdutil.Factory, out io.Writer, cmd *cobra.Command, args []stri
 		return err
 	}
 
+	infos := []*resource.Info{}
+	err = r.Visit(func(info *resource.Info, err error) error {
+		if err == nil {
+			infos = append(infos, info)
+		}
+		return nil
+	})
+
+	resourceVersion := cmdutil.GetFlagString(cmd, "resource-version")
+	if len(resourceVersion) != 0 && len(infos) > 1 {
+		return fmt.Errorf("cannot use --resource-version with multiple resources")
+	}
+
 	counter := 0
 	err = r.Visit(func(info *resource.Info, err error) error {
 		if err != nil {
@@ -133,7 +146,6 @@ func RunScale(f *cmdutil.Factory, out io.Writer, cmd *cobra.Command, args []stri
 			return err
 		}
 
-		resourceVersion := cmdutil.GetFlagString(cmd, "resource-version")
 		currentSize := cmdutil.GetFlagInt(cmd, "current-replicas")
 		precondition := &kubectl.ScalePrecondition{Size: currentSize, ResourceVersion: resourceVersion}
 		retry := kubectl.NewRetryParams(kubectl.Interval, kubectl.Timeout)
