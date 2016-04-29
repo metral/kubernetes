@@ -17,6 +17,7 @@ limitations under the License.
 package rollout
 
 import (
+	"fmt"
 	"io"
 
 	"github.com/spf13/cobra"
@@ -63,7 +64,8 @@ func NewCmdRolloutPause(f *cmdutil.Factory, out io.Writer) *cobra.Command {
 		Long:    pause_long,
 		Example: pause_example,
 		Run: func(cmd *cobra.Command, args []string) {
-			cmdutil.CheckErr(opts.RunPause(f, cmd, out, args))
+			cmdutil.CheckErr(opts.CompletePause(f, cmd, out, args))
+			cmdutil.CheckErr(opts.RunPause())
 		},
 	}
 
@@ -73,7 +75,7 @@ func NewCmdRolloutPause(f *cmdutil.Factory, out io.Writer) *cobra.Command {
 	return cmd
 }
 
-func (o *PauseConfig) RunPause(f *cmdutil.Factory, cmd *cobra.Command, out io.Writer, args []string) error {
+func (o *PauseConfig) CompletePause(f *cmdutil.Factory, cmd *cobra.Command, out io.Writer, args []string) error {
 	if len(args) == 0 && len(o.Filenames) == 0 {
 		return cmdutil.UsageError(cmd, cmd.Use)
 	}
@@ -87,39 +89,32 @@ func (o *PauseConfig) RunPause(f *cmdutil.Factory, cmd *cobra.Command, out io.Wr
 		return err
 	}
 
-	r := resource.NewBuilder(o.Mapper, o.Typer, resource.ClientMapperFunc(f.ClientForMapping), f.Decoder(true)).
+	infos, err := resource.NewBuilder(o.Mapper, o.Typer, resource.ClientMapperFunc(f.ClientForMapping), f.Decoder(true)).
 		NamespaceParam(cmdNamespace).DefaultNamespace().
 		FilenameParam(enforceNamespace, o.Recursive, o.Filenames...).
 		ResourceTypeOrNameArgs(true, args...).
-		ContinueOnError().
+		SingleResourceType().
 		Latest().
-		Flatten().
-		Do()
-	err = r.Err()
+		Do().Infos()
 	if err != nil {
 		return err
 	}
+	if len(infos) != 1 {
+		return fmt.Errorf("rollout pause is only supported on individual resources - %d resources were found", len(infos))
+	}
+	o.Info = infos[0]
+	return nil
+}
 
-	err = r.Visit(func(info *resource.Info, err error) error {
-		if err != nil {
-			return err
-		}
-
-		o.Info = info
-
-		isAlreadyPaused, err := o.PauseObject(o.Info.Object)
-		if err != nil {
-			return err
-		}
-		if isAlreadyPaused {
-			cmdutil.PrintSuccess(o.Mapper, false, o.Out, o.Info.Mapping.Resource, o.Info.Name, "already paused")
-			return nil
-		}
-		cmdutil.PrintSuccess(o.Mapper, false, o.Out, o.Info.Mapping.Resource, o.Info.Name, "paused")
+func (o PauseConfig) RunPause() error {
+	isAlreadyPaused, err := o.PauseObject(o.Info.Object)
+	if err != nil {
+		return err
+	}
+	if isAlreadyPaused {
+		cmdutil.PrintSuccess(o.Mapper, false, o.Out, o.Info.Mapping.Resource, o.Info.Name, "already paused")
 		return nil
-	})
-	if err != nil {
-		return err
 	}
+	cmdutil.PrintSuccess(o.Mapper, false, o.Out, o.Info.Mapping.Resource, o.Info.Name, "paused")
 	return nil
 }
